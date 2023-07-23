@@ -20,9 +20,11 @@ public class RestApi {
     private String SOURCE_TRADE_EVENT;
     private Boolean startTracking = true;
     private final DatabaseConfig databaseConfig;
+    private final AppConfig appConfig;
 
-    public RestApi(DatabaseConfig databaseConfig) {
+    public RestApi(DatabaseConfig databaseConfig, AppConfig appConfig) {
         this.databaseConfig = databaseConfig;
+        this.appConfig = appConfig;
         tradeEvents = new ArrayList<>();
         PROCEED_TRADE_EVENT = "processed_trade_event_";
         SOURCE_TRADE_EVENT = "source_trade_event_";
@@ -113,7 +115,8 @@ public class RestApi {
     private void startTradeStream() {
         WebSocketStreamClient wsStreamClient = new WebSocketStreamClientImpl();
         ArrayList<String> streams = new ArrayList<>();
-        streams.add("bnbbtc@trade");
+
+        streams.add(appConfig.getEventSymbol() + "@trade");
 
         wsStreamClient.combineStreams(streams, (event) -> {
             TradeEvent tradeEvent = parseTradeEvent(event);
@@ -121,9 +124,7 @@ public class RestApi {
                 if (!tradeEvents.contains(tradeEvent)) {
                     tradeEvents.add(tradeEvent);
                     insertTradeEventToSourceTable(tradeEvent); // Insert trade event to source table
-                    long tradeTime = tradeEvent.getTradeTime();
-                    String tradeTimeStr = String.valueOf(tradeTime);
-                    if (tradeTimeStr.charAt(tradeTimeStr.length() - 4) == '0' && startTracking) {
+                    if (startTracking) {
                         // Start the timer when tradeTime ends with 00 seconds
                         tradeEvents.clear();
                         startTracking = false;

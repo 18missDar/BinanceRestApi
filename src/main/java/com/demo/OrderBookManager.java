@@ -27,8 +27,9 @@ public class OrderBookManager {
 
     private String PROCEED_ORDER_BOOK;
     private String SOURCE_ORDER_BOOK_EVENT;
-    private static final String DEPTH_API_URL = "https://api.binance.com/api/v3/depth?symbol=BNBBTC&limit=1000";
+    private String DEPTH_API_URL;
     private final DatabaseConfig databaseConfig;
+    private final AppConfig appConfig;
 
     private long lastUpdateId;
 
@@ -49,13 +50,15 @@ public class OrderBookManager {
         return lastUpdateId;
     }
 
-    public OrderBookManager(DatabaseConfig databaseConfig) {
+    public OrderBookManager(DatabaseConfig databaseConfig, AppConfig appConfig) {
         this.databaseConfig = databaseConfig;
+        this.appConfig = appConfig;
         orderBookEventsList = new ArrayList<>();
         bidsActual = new ArrayList<>();
         asksActual = new ArrayList<>();
         SOURCE_ORDER_BOOK_EVENT = "source_order_book_event_";
         PROCEED_ORDER_BOOK = "proceed_order_book_event_";
+        DEPTH_API_URL = "https://api.binance.com/api/v3/depth?symbol=" + appConfig.getEventSymbol().toUpperCase(Locale.ROOT) + "&limit=" + appConfig.getLimitCount();
         createSourceTable();
         createProceedTable();
         startOrderBookEventStream();
@@ -64,7 +67,7 @@ public class OrderBookManager {
     private void startOrderBookEventStream(){
         WebSocketStreamClient wsStreamClient = new WebSocketStreamClientImpl();
         ArrayList<String> streams = new ArrayList<>();
-        streams.add("bnbbtc@depth");
+        streams.add(appConfig.getEventSymbol() + "@depth");
 
         wsStreamClient.combineStreams(streams, (event) -> {
             OrderBookEvent orderBookEvent = parseOrderBookEvent(event);
@@ -87,7 +90,7 @@ public class OrderBookManager {
                     updateLocalOrderBook(orderBookEvent);
                 }
 
-                getDepthSnapshot();
+                lastUpdateId += 1;
 
             } else {
                 // Handle parsing errors
