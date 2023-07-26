@@ -1,7 +1,9 @@
 package com.demo;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -17,13 +19,17 @@ public class OrderBookController {
     }
 
     @GetMapping
-    public String getOrderBook() {
-        List<OrderBookEvent.PriceQuantityPair> bids = orderBookManager.getBidsActual();
-        List<OrderBookEvent.PriceQuantityPair> asks = orderBookManager.getAsksActual();
+    public String getOrderBook(@RequestParam long currentTime) {
+        OrderBookSnapshot orderBookSnapshot = null;
+        try {
+            orderBookSnapshot = orderBookManager.collectData(currentTime);
+        } catch (JsonProcessingException e) {
+            e.printStackTrace();
+        }
         String resultJson = "{\n" +
-                "\"lastUpdateId\":" + orderBookManager.getLastUpdateId() + "," +
-               "\"bids\": " + bids.toString() +
-                ", \"asks\": " + asks.toString() + "}";
+                "\"lastUpdateId\":" + orderBookSnapshot.getLastUpdateId() + "," +
+               "\"bids\": " + orderBookSnapshot.getBids() +
+                ", \"asks\": " + orderBookSnapshot.getAsks() + "}";
         return resultJson;
     }
 }

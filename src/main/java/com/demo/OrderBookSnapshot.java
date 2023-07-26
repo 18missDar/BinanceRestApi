@@ -6,6 +6,7 @@ public class OrderBookSnapshot {
     private long lastUpdateId;
     private List<OrderBookEvent.PriceQuantityPair> bids;
     private List<OrderBookEvent.PriceQuantityPair> asks;
+    private long currentTime;
 
     public long getLastUpdateId() {
         return lastUpdateId;
@@ -23,6 +24,14 @@ public class OrderBookSnapshot {
         this.lastUpdateId = lastUpdateId;
     }
 
+    public long getCurrentTime() {
+        return currentTime;
+    }
+
+    public void setCurrentTime(long currentTime) {
+        this.currentTime = currentTime;
+    }
+
     public void setBids(List<OrderBookEvent.PriceQuantityPair> bids) {
         this.bids = bids;
     }
@@ -30,4 +39,5 @@ public class OrderBookSnapshot {
     public void setAsks(List<OrderBookEvent.PriceQuantityPair> asks) {
         this.asks = asks;
     }
+
 }

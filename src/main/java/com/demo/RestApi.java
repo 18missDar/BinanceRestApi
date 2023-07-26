@@ -26,8 +26,8 @@ public class RestApi {
         this.databaseConfig = databaseConfig;
         this.appConfig = appConfig;
         tradeEvents = new ArrayList<>();
-        PROCEED_TRADE_EVENT = "processed_trade_event_";
-        SOURCE_TRADE_EVENT = "source_trade_event_";
+        PROCEED_TRADE_EVENT = "processed_trade_event_"+ appConfig.getEventSymbol() + "_";
+        SOURCE_TRADE_EVENT = "source_trade_event_"+ appConfig.getEventSymbol() + "_";
         createSourceTable();
         createSummaryTable();
         startTradeStream();

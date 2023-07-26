@@ -2,6 +2,7 @@ package com.demo;
 
 import com.binance.connector.client.WebSocketStreamClient;
 import com.binance.connector.client.impl.WebSocketStreamClientImpl;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.JsonArray;
@@ -19,48 +20,36 @@ import org.apache.http.util.EntityUtils;
 
 import java.io.IOException;
 import java.sql.*;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Date;
 
 @Service
 public class OrderBookManager {
 
-    private String PROCEED_ORDER_BOOK;
+    private Timer timer;
     private String SOURCE_ORDER_BOOK_EVENT;
+    private String SOURCE_SHAPSHOT_BOOK;
     private String DEPTH_API_URL;
     private final DatabaseConfig databaseConfig;
     private final AppConfig appConfig;
 
-    private long lastUpdateId;
+    private List<OrderBookEvent> orderBookEventList = new ArrayList<>();
 
-    private List<OrderBookEvent> orderBookEventsList;
-    private List<OrderBookEvent.PriceQuantityPair> bidsActual;
-    private List<OrderBookEvent.PriceQuantityPair> asksActual;
     private Boolean startTracking = true;
 
-    public List<OrderBookEvent.PriceQuantityPair> getBidsActual() {
-        return bidsActual;
-    }
-
-    public List<OrderBookEvent.PriceQuantityPair> getAsksActual() {
-        return asksActual;
-    }
-
-    public long getLastUpdateId() {
-        return lastUpdateId;
-    }
 
     public OrderBookManager(DatabaseConfig databaseConfig, AppConfig appConfig) {
         this.databaseConfig = databaseConfig;
         this.appConfig = appConfig;
-        orderBookEventsList = new ArrayList<>();
-        bidsActual = new ArrayList<>();
-        asksActual = new ArrayList<>();
-        SOURCE_ORDER_BOOK_EVENT = "source_order_book_event_";
-        PROCEED_ORDER_BOOK = "proceed_order_book_event_";
+        SOURCE_ORDER_BOOK_EVENT = "source_order_book_event_"+ appConfig.getEventSymbol() + "_";
+        SOURCE_SHAPSHOT_BOOK = "source_snapshot_book_"+ appConfig.getEventSymbol() + "_";
         DEPTH_API_URL = "https://api.binance.com/api/v3/depth?symbol=" + appConfig.getEventSymbol().toUpperCase(Locale.ROOT) + "&limit=" + appConfig.getLimitCount();
         createSourceTable();
-        createProceedTable();
+        createSourceShapshotTable();
         startOrderBookEventStream();
     }
 
@@ -72,25 +61,15 @@ public class OrderBookManager {
         wsStreamClient.combineStreams(streams, (event) -> {
             OrderBookEvent orderBookEvent = parseOrderBookEvent(event);
             if (orderBookEvent != null) {
-                orderBookEventsList.add(orderBookEvent);
-
-                if (startTracking) {
-                    getDepthSnapshot();
+                orderBookEventList.add(orderBookEvent);
+                if (startTracking ) {
+                    String orderBookSnapshot = getDepthSnapshot();
+                    if (orderBookSnapshot != null) {
+                        insertIntoSourceSnapshot(orderBookSnapshot, Instant.now().toEpochMilli());
+                    }
                     startTracking = false;
-                    return;
+                    startTimer();
                 }
-
-                // Step 4: Drop any event where u is <= lastUpdateId in the snapshot
-                if (orderBookEvent.getFinalUpdateId() <= lastUpdateId) {
-                    return;
-                }
-
-                // Step 5: The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
-                if (orderBookEvent.getFirstUpdateId() == lastUpdateId + 1) {
-                    updateLocalOrderBook(orderBookEvent);
-                }
-
-                lastUpdateId += 1;
 
             } else {
                 // Handle parsing errors
@@ -100,6 +79,32 @@ public class OrderBookManager {
 
         // Schedule the WebSocket renewal before it expires
         scheduleWebSocketRenewal();
+    }
+
+    private long calculateDelayToNextHour() {
+        ZoneId zoneId = ZoneId.systemDefault();
+        LocalDateTime now = LocalDateTime.now(zoneId);
+        int minutesUntilNextHour = 60 - now.getMinute();
+
+        return minutesUntilNextHour * 60 * 1000L; // Convert minutes to milliseconds
+    }
+
+    private void startTimer(){
+        if (timer != null) {
+            timer.cancel();
+        }
+
+        timer = new Timer();
+        long delay = calculateDelayToNextHour();
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+                String orderBookSnapshot = getDepthSnapshot();
+                if (orderBookSnapshot != null) {
+                    insertIntoSourceSnapshot(orderBookSnapshot, Instant.now().toEpochMilli());
+                }
+            }
+        }, delay, 60 * 60 * 1000); // Schedule to run every one hour (60 minutes * 60 seconds * 1000 milliseconds)
     }
 
     private void scheduleWebSocketRenewal() {
@@ -115,6 +120,39 @@ public class OrderBookManager {
                 startOrderBookEventStream(); // Renew the WebSocket connection
             }
         }, new Date(renewalTimeMillis));
+    }
+
+    private void createSourceShapshotTable(){
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
+            // Generate the table name with the current time in Unix format
+            long currentTimeUnix = System.currentTimeMillis() / 1000L;
+            SOURCE_SHAPSHOT_BOOK = SOURCE_SHAPSHOT_BOOK + currentTimeUnix;
+
+            String createQuery = "CREATE TABLE " + SOURCE_SHAPSHOT_BOOK + " (" +
+                    "currentTime BIGINT, " +
+                    "partial_book JSONB " +
+                    ")";
+
+            try (PreparedStatement statement = connection.prepareStatement(createQuery)) {
+                statement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void insertIntoSourceSnapshot(String orderBookSnapshot, long currentTimeUnix){
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
+            String insertQuery = "INSERT INTO " + SOURCE_SHAPSHOT_BOOK + " (currentTime, partial_book) VALUES (?, ?)";
+            try (PreparedStatement preparedStatement = connection.prepareStatement(insertQuery)) {
+                preparedStatement.setLong(1, currentTimeUnix);
+                preparedStatement.setObject(2, orderBookSnapshot, java.sql.Types.OTHER);
+                preparedStatement.executeUpdate();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
     }
 
     private void createSourceTable() {
@@ -141,55 +179,6 @@ public class OrderBookManager {
         }
     }
 
-    private void createProceedTable() {
-        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
-            // Generate the table name with the current time in Unix format
-            long currentTimeUnix = System.currentTimeMillis() / 1000L;
-            PROCEED_ORDER_BOOK = PROCEED_ORDER_BOOK + currentTimeUnix;
-
-            String createQuery = "CREATE TABLE " + PROCEED_ORDER_BOOK + " (" +
-                    "lastUpdateId BIGINT, " +
-                    "partial_order_book JSONB" +
-                    ")";
-
-            try (Statement statement = connection.createStatement()) {
-                statement.executeUpdate(createQuery);
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void updateLocalOrderBook(OrderBookEvent event) {
-        // Update the local order book based on the event data
-        List<OrderBookEvent.PriceQuantityPair> bidsToUpdate = event.getBids();
-        List<OrderBookEvent.PriceQuantityPair> asksToUpdate = event.getAsks();
-
-        // Remove price levels with quantity = 0
-        bidsToUpdate.removeIf(pair -> pair.getQuantity().equals("0"));
-        asksToUpdate.removeIf(pair -> pair.getQuantity().equals("0"));
-
-        // Step 8: Receiving an event that removes a price level that is not in your local order book can happen and is normal
-        // Update bidsActual and asksActual based on the event data
-        for (OrderBookEvent.PriceQuantityPair bid : bidsToUpdate) {
-            bidsActual.removeIf(pair -> pair.getPrice().equals(bid.getPrice()));
-            if (!bid.getQuantity().equals("0")) {
-                bidsActual.add(bid);
-            }
-        }
-
-        for (OrderBookEvent.PriceQuantityPair ask : asksToUpdate) {
-            asksActual.removeIf(pair -> pair.getPrice().equals(ask.getPrice()));
-            if (!ask.getQuantity().equals("0")) {
-                asksActual.add(ask);
-            }
-        }
-
-        // Update the local database table with the updated bids and asks
-        String resultJson = "{ \"bids\": " + bidsActual.toString() + ", \"asks\": " + asksActual.toString() + "}";
-        insertIntoProceedOrderBook(lastUpdateId, resultJson);
-    }
-
     private void insertOrderBookEventToSourceTable(String eventType, long eventTime, String symbol, long firstUpdateId, long finalUpdateId, JsonNode bids, JsonNode asks) {
         try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
             String insertQuery = "INSERT INTO " + SOURCE_ORDER_BOOK_EVENT +
@@ -212,20 +201,8 @@ public class OrderBookManager {
         }
     }
 
-    private void insertIntoProceedOrderBook(long lastUpdateId, String partialOrderBook){
-        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
-            String insertQuery = "INSERT INTO " + PROCEED_ORDER_BOOK + " (lastUpdateId, partial_order_book) VALUES (?, ?)";
-            try (PreparedStatement preparedStatement = connection.prepareStatement(insertQuery)) {
-                preparedStatement.setLong(1, lastUpdateId);
-                preparedStatement.setObject(2, partialOrderBook, java.sql.Types.OTHER); // Set the data type explicitly
-                preparedStatement.executeUpdate();
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-    }
 
-    private void getDepthSnapshot() {
+    private String getDepthSnapshot() {
         HttpClient httpClient = HttpClients.createDefault();
         HttpGet httpGet = new HttpGet(DEPTH_API_URL);
 
@@ -234,22 +211,13 @@ public class OrderBookManager {
             HttpEntity entity = response.getEntity();
             String responseBody = EntityUtils.toString(entity);
             if (!responseBody.isEmpty()) {
-                OrderBookSnapshot snapshot = parseOrderBookSnapshot(responseBody);
-                if (snapshot != null) {
-                    // Update the local order book with the bids and asks from the snapshot
-                    bidsActual.clear();
-                    asksActual.clear();
-                    bidsActual.addAll(snapshot.getBids());
-                    asksActual.addAll(snapshot.getAsks());
-
-                    // Set the lastUpdateId to the update ID of the snapshot
-                    lastUpdateId = snapshot.getLastUpdateId();
-                }
+                return responseBody;
             }
         } catch (IOException e) {
             e.printStackTrace();
             // Handle exception
         }
+        return null;
     }
 
     private OrderBookSnapshot parseOrderBookSnapshot(String responseBody) {
@@ -320,7 +288,7 @@ public class OrderBookManager {
 
             // Create and return an OrderBookEvent object
             OrderBookEvent result = new OrderBookEvent(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, bids, asks);
-            if (orderBookEventsList.contains(result))
+            if (orderBookEventList.contains(result))
                 return null;
             else {
                 insertOrderBookEventToSourceTable(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, dataNode.get("b"), dataNode.get("a"));
@@ -340,6 +308,184 @@ public class OrderBookManager {
             priceQuantityPairs.add(new OrderBookEvent.PriceQuantityPair(price, quantity));
         }
         return priceQuantityPairs;
+    }
+
+    public Optional<OrderBookSnapshot> findClosestSnapshot(long currentTime) {
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
+            String selectQuery = "SELECT * FROM " + SOURCE_SHAPSHOT_BOOK +
+                    " WHERE currentTime <= ? ORDER BY currentTime DESC LIMIT 1";
+
+            try (PreparedStatement statement = connection.prepareStatement(selectQuery)) {
+                statement.setLong(1, currentTime);
+
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (resultSet.next()) {
+                        long currentTimeDB = resultSet.getLong("currentTime");
+                        String partial_bookJson = resultSet.getString("partial_book");
+
+                        // Assuming you have a method to parse JSON strings and create the OrderBookSnapshot object
+                        OrderBookSnapshot snapshot = parseOrderBookSnapshot(partial_bookJson);
+                        snapshot.setCurrentTime(currentTimeDB);
+                        return Optional.of(snapshot);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return Optional.empty();
+    }
+
+    public List<OrderBookEvent> getRowsBetweenTimes(long time1, long time2) throws JsonProcessingException {
+        List<OrderBookEvent> result = new ArrayList<>();
+
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
+            String selectQuery = "SELECT * FROM " + SOURCE_ORDER_BOOK_EVENT +
+                    " WHERE event_time >= ? AND event_time <= ?";
+
+            try (PreparedStatement statement = connection.prepareStatement(selectQuery)) {
+                statement.setLong(1, time1);
+                statement.setLong(2, time2);
+
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    while (resultSet.next()) {
+                        OrderBookEvent event = mapResultSetToOrderBookEvent(resultSet);
+                        result.add(event);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return result;
+    }
+
+    private OrderBookEvent mapResultSetToOrderBookEvent(ResultSet resultSet) throws SQLException, JsonProcessingException {
+        // Implement a method to map the ResultSet to an OrderBookEvent object
+        // Example:
+        String eventType = resultSet.getString("event_type");
+        long eventTime = resultSet.getLong("event_time");
+        String symbol = resultSet.getString("symbol");
+        long firstUpdateId = resultSet.getLong("first_update_id");
+        long finalUpdateId = resultSet.getLong("final_update_id");
+        String bidsJson = resultSet.getString("bids");
+        List<OrderBookEvent.PriceQuantityPair> bids = parseBidsAsks(bidsJson);
+        String asksJson = resultSet.getString("asks");
+        List<OrderBookEvent.PriceQuantityPair> asks = parseBidsAsks(asksJson);
+
+        // Assuming you have a method to parse JSON strings and create the OrderBookEvent object
+        OrderBookEvent event = new OrderBookEvent(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, bids, asks);
+        return event;
+    }
+
+    public static List<OrderBookEvent.PriceQuantityPair> parseBidsAsks(String bidsJson) throws JsonProcessingException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<List<String>> parsedBids = objectMapper.readValue(bidsJson, List.class);
+
+        List<OrderBookEvent.PriceQuantityPair> bids = new ArrayList<>();
+
+        for (List<String> bid : parsedBids) {
+            if (bid.size() >= 2) {
+                OrderBookEvent.PriceQuantityPair priceQuantityPair = new OrderBookEvent.PriceQuantityPair(bid.get(0), bid.get(1));
+                bids.add(priceQuantityPair);
+            }
+        }
+
+        return bids;
+    }
+
+    private static List<OrderBookEvent.PriceQuantityPair> getAllBids(List<OrderBookEvent> orderBookEvents) {
+        List<OrderBookEvent.PriceQuantityPair> allBids = new ArrayList<>();
+
+        for (OrderBookEvent event : orderBookEvents) {
+            if (event.getBids() != null) {
+                allBids.addAll(event.getBids());
+            }
+        }
+
+        return allBids;
+    }
+
+    public static List<OrderBookEvent.PriceQuantityPair> getAllAsks(List<OrderBookEvent> orderBookEvents) {
+        List<OrderBookEvent.PriceQuantityPair> allAsks = new ArrayList<>();
+
+        for (OrderBookEvent event : orderBookEvents) {
+            if (event.getAsks() != null) {
+                allAsks.addAll(event.getAsks());
+            }
+        }
+
+        return allAsks;
+    }
+
+    private OrderBookSnapshot processBidsAndAsks(List<OrderBookEvent.PriceQuantityPair> bids, List<OrderBookEvent.PriceQuantityPair> asks) {
+        Iterator<OrderBookEvent.PriceQuantityPair> bidsIterator = bids.iterator();
+        Iterator<OrderBookEvent.PriceQuantityPair> asksIterator = asks.iterator();
+
+        while (bidsIterator.hasNext()) {
+            OrderBookEvent.PriceQuantityPair bid = bidsIterator.next();
+            String bidPrice = bid.getPrice();
+            String bidQuantity = bid.getQuantity();
+
+            while (asksIterator.hasNext()) {
+                OrderBookEvent.PriceQuantityPair ask = asksIterator.next();
+                String askPrice = ask.getPrice();
+                String askQuantity = ask.getQuantity();
+
+                if (bidPrice.equals(askPrice) && bidQuantity.equals(askQuantity)) {
+                    // Delete both the bid and ask
+                    bidsIterator.remove();
+                    asksIterator.remove();
+                    break;
+                } else if (bidPrice.equals(askPrice)) {
+                    double bidQuantityValue = Double.parseDouble(bidQuantity);
+                    double askQuantityValue = Double.parseDouble(askQuantity);
+
+                    if (bidQuantityValue > askQuantityValue) {
+                        // Update bid quantity and delete the ask
+                        bidQuantityValue -= askQuantityValue;
+                        bid.setQuantity(String.valueOf(bidQuantityValue));
+                        asksIterator.remove();
+                    } else {
+                        // Update ask quantity and delete the bid
+                        askQuantityValue -= bidQuantityValue;
+                        ask.setQuantity(String.valueOf(askQuantityValue));
+                        bidsIterator.remove();
+                    }
+                }
+            }
+        }
+        OrderBookSnapshot result = new OrderBookSnapshot();
+        result.setBids(bids);
+        result.setAsks(asks);
+        return result;
+    }
+
+
+    private OrderBookSnapshot accumulateSnapshotActualBids(List<OrderBookEvent> orderBookEvents, OrderBookSnapshot orderBookSnapshot){
+        List<OrderBookEvent.PriceQuantityPair> bidsFromShapshot = orderBookSnapshot.getBids();
+        List<OrderBookEvent.PriceQuantityPair> asksFromShapshot = orderBookSnapshot.getAsks();
+        bidsFromShapshot.addAll(getAllBids(orderBookEvents));
+        asksFromShapshot.addAll(getAllAsks(orderBookEvents));
+        OrderBookSnapshot result = processBidsAndAsks(bidsFromShapshot, asksFromShapshot);
+        result.setLastUpdateId(orderBookSnapshot.getLastUpdateId());
+        return result;
+    }
+
+
+    public OrderBookSnapshot collectData(long currentTime) throws JsonProcessingException {
+        Optional<OrderBookSnapshot> orderBookSnapshot = findClosestSnapshot(currentTime);
+        List<OrderBookEvent> orderBookEvents = getRowsBetweenTimes(orderBookSnapshot.get().getCurrentTime(), currentTime);
+        if (orderBookSnapshot.get() != null) {
+            return accumulateSnapshotActualBids(orderBookEvents, orderBookSnapshot.get());
+        }
+        else {
+            OrderBookSnapshot orderBookSnapshot1 = processBidsAndAsks(getAllBids(orderBookEvents), getAllAsks(orderBookEvents));
+            orderBookSnapshot1.setLastUpdateId(0000000);
+            return orderBookSnapshot1;
+        }
     }
 
 }
