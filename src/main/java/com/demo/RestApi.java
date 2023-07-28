@@ -10,28 +10,97 @@ import org.springframework.stereotype.Service;
 import java.sql.*;
 import java.sql.Date;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 
 @Service
 public class RestApi {
     private Timer timer;
-    private List<TradeEvent> tradeEvents;
+    private ThreadLocal<List<TradeEvent>> tradeEvents = new ThreadLocal<>();
     private String PROCEED_TRADE_EVENT;
     private String SOURCE_TRADE_EVENT;
     private Boolean startTracking = true;
-    private final DatabaseConfig databaseConfig;
-    private final AppConfig appConfig;
+    private DatabaseConfig databaseConfig;
+    private AppConfig appConfig;
 
-    public RestApi(DatabaseConfig databaseConfig, AppConfig appConfig) {
+    public void startRestApi(DatabaseConfig databaseConfig, AppConfig appConfig, boolean update_parameter) {
         this.databaseConfig = databaseConfig;
         this.appConfig = appConfig;
-        tradeEvents = new ArrayList<>();
-        PROCEED_TRADE_EVENT = "processed_trade_event_"+ appConfig.getEventSymbol() + "_";
-        SOURCE_TRADE_EVENT = "source_trade_event_"+ appConfig.getEventSymbol() + "_";
-        createSourceTable();
-        createSummaryTable();
+        tradeEvents.set(new ArrayList<>());
+        if (!update_parameter) {
+            PROCEED_TRADE_EVENT = "processed_trade_event_" + appConfig.getEventSymbol() + "_";
+            SOURCE_TRADE_EVENT = "source_trade_event_" + appConfig.getEventSymbol() + "_";
+            createSourceTable();
+            createSummaryTable();
+        }
+        else {
+            startTracking = true;
+            findLastCreatedTable();
+        }
         startTradeStream();
     }
+
+
+    public void findLastCreatedTable() {
+        String sourcePattern = "^source_trade_event_" + appConfig.getEventSymbol() + "_([0-9]+)$";
+        String proceedPattern = "^processed_trade_event_" + appConfig.getEventSymbol() + "_([0-9]+)$";
+        Pattern sourceTableNamePattern = Pattern.compile(sourcePattern);
+        Pattern proceedTableNamePattern = Pattern.compile(proceedPattern);
+
+        List<String> sourceTradeEventsNames = new ArrayList<>();
+        List<String> proceedTradeEventsNames = new ArrayList<>();
+
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword());
+             Statement statement = connection.createStatement()) {
+            String showTablesQuery = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'";
+            try (ResultSet resultSet = statement.executeQuery(showTablesQuery)) {
+                while (resultSet.next()) {
+                    String tableName = resultSet.getString(1);
+                    if (sourceTableNamePattern.matcher(tableName).matches()) {
+                        sourceTradeEventsNames.add(tableName);
+                    } else if (proceedTableNamePattern.matcher(tableName).matches()) {
+                        proceedTradeEventsNames.add(tableName);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        // Find the element with the maximum end number for sourceTradeEventsNames
+        String maxSourceTableName = null;
+        long maxSourceNumber = Long.MIN_VALUE;
+        for (String tableName : sourceTradeEventsNames) {
+            Matcher matcher = sourceTableNamePattern.matcher(tableName);
+            if (matcher.matches()) {
+                long number = Long.parseLong(matcher.group(1));
+                if (number > maxSourceNumber) {
+                    maxSourceTableName = tableName;
+                    maxSourceNumber = number;
+                }
+            }
+        }
+
+        // Find the element with the maximum end number for proceedTradeEventsNames
+        String maxProceedTableName = null;
+        long maxProceedNumber = Long.MIN_VALUE;
+        for (String tableName : proceedTradeEventsNames) {
+            Matcher matcher = proceedTableNamePattern.matcher(tableName);
+            if (matcher.matches()) {
+                long number = Long.parseLong(matcher.group(1));
+                if (number > maxProceedNumber) {
+                    maxProceedTableName = tableName;
+                    maxProceedNumber = number;
+                }
+            }
+        }
+
+        // Now you can use maxSourceTableName and maxProceedTableName as needed.
+        SOURCE_TRADE_EVENT = maxSourceTableName;
+        PROCEED_TRADE_EVENT = maxProceedTableName;
+    }
+
 
     private void createSourceTable() {
         try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
@@ -43,7 +112,7 @@ public class RestApi {
                     "event_type VARCHAR(255), " +
                     "event_time BIGINT, " +
                     "symbol VARCHAR(255), " +
-                    "trade_id BIGINT, " +
+                    "trade_id BIGINT PRIMARY KEY, " + // Added PRIMARY KEY constraint for trade_id
                     "price VARCHAR(255), " +
                     "quantity VARCHAR(255), " +
                     "buyer_order_id BIGINT, " +
@@ -86,7 +155,7 @@ public class RestApi {
         }
     }
 
-    private void insertTradeEventToSourceTable(TradeEvent tradeEvent) {
+    private boolean insertTradeEventToSourceTable(TradeEvent tradeEvent) {
         try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword())) {
 
             String insertQuery = "INSERT INTO " + SOURCE_TRADE_EVENT + " (event_type, event_time, symbol, trade_id, " +
@@ -106,9 +175,12 @@ public class RestApi {
                 statement.setBoolean(10, tradeEvent.isBuyerMarketMaker());
 
                 statement.executeUpdate();
+                return true;
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            if (!e.getMessage().contains("duplicate key"))
+                e.printStackTrace();
+            return false;
         }
     }
 
@@ -121,16 +193,14 @@ public class RestApi {
         wsStreamClient.combineStreams(streams, (event) -> {
             TradeEvent tradeEvent = parseTradeEvent(event);
             if (tradeEvent != null) {
-                if (!tradeEvents.contains(tradeEvent)) {
-                    tradeEvents.add(tradeEvent);
-                    insertTradeEventToSourceTable(tradeEvent); // Insert trade event to source table
+                    if (insertTradeEventToSourceTable(tradeEvent))
+                        tradeEvents.get().add(tradeEvent);
                     if (startTracking) {
                         // Start the timer when tradeTime ends with 00 seconds
-                        tradeEvents.clear();
+                        tradeEvents.get().clear();
                         startTracking = false;
                         startTimer();
                     }
-                }
             }
         });
 
@@ -147,9 +217,9 @@ public class RestApi {
         timer.schedule(new TimerTask() {
             @Override
             public void run() {
-                if (!tradeEvents.isEmpty()) {
+                if (!tradeEvents.get().isEmpty()) {
                     calculateAndPrintSummary();
-                    tradeEvents.clear();
+                    tradeEvents.get().clear();
                 }
             }
         }, 60000, 60000);
@@ -217,19 +287,20 @@ public class RestApi {
                 statement.executeUpdate();
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            if (!e.getMessage().contains("duplicate key"))
+                e.printStackTrace();
         }
     }
 
     private void calculateAndPrintSummary() {
-        String symbol = tradeEvents.get(0).getSymbol();
-        long tradeTime = tradeEvents.get(0).getTradeTime();
+        String symbol = tradeEvents.get().get(0).getSymbol();
+        long tradeTime = tradeEvents.get().get(0).getTradeTime();
         double sumQuantityTrue = 0;
         double sumQuantityFalse = 0;
         double weightedSumPriceTrue = 0;
         double weightedSumPriceFalse = 0;
 
-        for (TradeEvent tradeEvent : tradeEvents) {
+        for (TradeEvent tradeEvent : tradeEvents.get()) {
             double price = Double.parseDouble(tradeEvent.getPrice());
             double quantity = Double.parseDouble(tradeEvent.getQuantity());
             boolean isBuyerMarketMaker = tradeEvent.isBuyerMarketMaker();

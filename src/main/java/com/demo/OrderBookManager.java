@@ -26,6 +26,8 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Date;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class OrderBookManager {
@@ -34,34 +36,95 @@ public class OrderBookManager {
     private String SOURCE_ORDER_BOOK_EVENT;
     private String SOURCE_SHAPSHOT_BOOK;
     private String DEPTH_API_URL;
-    private final DatabaseConfig databaseConfig;
-    private final AppConfig appConfig;
-
-    private List<OrderBookEvent> orderBookEventList = new ArrayList<>();
+    private DatabaseConfig databaseConfig;
+    private AppConfig appConfig;
 
     private Boolean startTracking = true;
 
 
-    public OrderBookManager(DatabaseConfig databaseConfig, AppConfig appConfig) {
+    public void startOrderBookManage(DatabaseConfig databaseConfig, AppConfig appConfig, boolean update_parameter) {
         this.databaseConfig = databaseConfig;
         this.appConfig = appConfig;
-        SOURCE_ORDER_BOOK_EVENT = "source_order_book_event_"+ appConfig.getEventSymbol() + "_";
-        SOURCE_SHAPSHOT_BOOK = "source_snapshot_book_"+ appConfig.getEventSymbol() + "_";
         DEPTH_API_URL = "https://api.binance.com/api/v3/depth?symbol=" + appConfig.getEventSymbol().toUpperCase(Locale.ROOT) + "&limit=" + appConfig.getLimitCount();
-        createSourceTable();
-        createSourceShapshotTable();
+        if (!update_parameter) {
+            SOURCE_ORDER_BOOK_EVENT = "source_order_book_event_" + appConfig.getEventSymbol() + "_";
+            SOURCE_SHAPSHOT_BOOK = "source_snapshot_book_" + appConfig.getEventSymbol() + "_";
+            createSourceTable();
+            createSourceShapshotTable();
+        }
+        else{
+            startTracking = true;
+            findLastCreatedTable();
+        }
         startOrderBookEventStream();
+    }
+
+    public void findLastCreatedTable() {
+        String sourcePattern = "^source_order_book_event_" + appConfig.getEventSymbol() + "_([0-9]+)$";
+        String proceedPattern = "^source_snapshot_book_" + appConfig.getEventSymbol() + "_([0-9]+)$";
+        Pattern sourceTableNamePattern = Pattern.compile(sourcePattern);
+        Pattern proceedTableNamePattern = Pattern.compile(proceedPattern);
+
+        List<String> sourceTradeEventsNames = new ArrayList<>();
+        List<String> proceedTradeEventsNames = new ArrayList<>();
+
+        try (Connection connection = DriverManager.getConnection(databaseConfig.getDbUrl(), databaseConfig.getDbUsername(), databaseConfig.getDbPassword());
+             Statement statement = connection.createStatement()) {
+            String showTablesQuery = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'";
+            try (ResultSet resultSet = statement.executeQuery(showTablesQuery)) {
+                while (resultSet.next()) {
+                    String tableName = resultSet.getString(1);
+                    if (sourceTableNamePattern.matcher(tableName).matches()) {
+                        sourceTradeEventsNames.add(tableName);
+                    } else if (proceedTableNamePattern.matcher(tableName).matches()) {
+                        proceedTradeEventsNames.add(tableName);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        // Find the element with the maximum end number for sourceTradeEventsNames
+        String maxSourceTableName = null;
+        long maxSourceNumber = Long.MIN_VALUE;
+        for (String tableName : sourceTradeEventsNames) {
+            Matcher matcher = sourceTableNamePattern.matcher(tableName);
+            if (matcher.matches()) {
+                long number = Long.parseLong(matcher.group(1));
+                if (number > maxSourceNumber) {
+                    maxSourceTableName = tableName;
+                    maxSourceNumber = number;
+                }
+            }
+        }
+
+        // Find the element with the maximum end number for proceedTradeEventsNames
+        String maxProceedTableName = null;
+        long maxProceedNumber = Long.MIN_VALUE;
+        for (String tableName : proceedTradeEventsNames) {
+            Matcher matcher = proceedTableNamePattern.matcher(tableName);
+            if (matcher.matches()) {
+                long number = Long.parseLong(matcher.group(1));
+                if (number > maxProceedNumber) {
+                    maxProceedTableName = tableName;
+                    maxProceedNumber = number;
+                }
+            }
+        }
+
+        SOURCE_ORDER_BOOK_EVENT = maxSourceTableName;
+        SOURCE_SHAPSHOT_BOOK = maxProceedTableName;
     }
 
     private void startOrderBookEventStream(){
         WebSocketStreamClient wsStreamClient = new WebSocketStreamClientImpl();
         ArrayList<String> streams = new ArrayList<>();
-        streams.add(appConfig.getEventSymbol() + "@depth");
+        streams.add(appConfig.getEventSymbol() + "@depth@" + appConfig.getUpdateSpeed() + "ms");
 
         wsStreamClient.combineStreams(streams, (event) -> {
             OrderBookEvent orderBookEvent = parseOrderBookEvent(event);
             if (orderBookEvent != null) {
-                orderBookEventList.add(orderBookEvent);
                 if (startTracking ) {
                     String orderBookSnapshot = getDepthSnapshot();
                     if (orderBookSnapshot != null) {
@@ -150,7 +213,8 @@ public class OrderBookManager {
                 preparedStatement.executeUpdate();
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            if (!e.getMessage().contains("duplicate key"))
+                e.printStackTrace();
         }
 
     }
@@ -166,7 +230,7 @@ public class OrderBookManager {
                     "event_time BIGINT, " +
                     "symbol VARCHAR(10), " +
                     "first_update_id BIGINT, " +
-                    "final_update_id BIGINT, " +
+                    "final_update_id BIGINT PRIMARY KEY, " + // Added PRIMARY KEY constraint for final_update_id
                     "bids JSONB, " +
                     "asks JSONB" +
                     ")";
@@ -197,7 +261,8 @@ public class OrderBookManager {
                 preparedStatement.executeUpdate();
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            if (!e.getMessage().contains("duplicate key"))
+                e.printStackTrace();
         }
     }
 
@@ -288,12 +353,8 @@ public class OrderBookManager {
 
             // Create and return an OrderBookEvent object
             OrderBookEvent result = new OrderBookEvent(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, bids, asks);
-            if (orderBookEventList.contains(result))
-                return null;
-            else {
-                insertOrderBookEventToSourceTable(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, dataNode.get("b"), dataNode.get("a"));
-                return result;
-            }
+            insertOrderBookEventToSourceTable(eventType, eventTime, symbol, firstUpdateId, finalUpdateId, dataNode.get("b"), dataNode.get("a"));
+            return result;
         } catch (Exception e) {
             e.printStackTrace();
             return null; // Return null in case of any parsing errors
@@ -467,10 +528,13 @@ public class OrderBookManager {
     private OrderBookSnapshot accumulateSnapshotActualBids(List<OrderBookEvent> orderBookEvents, OrderBookSnapshot orderBookSnapshot){
         List<OrderBookEvent.PriceQuantityPair> bidsFromShapshot = orderBookSnapshot.getBids();
         List<OrderBookEvent.PriceQuantityPair> asksFromShapshot = orderBookSnapshot.getAsks();
+        int lastIndex = orderBookEvents.size() - 1;
+        long lastUpdatedId = orderBookEvents.get(lastIndex).getFinalUpdateId();
         bidsFromShapshot.addAll(getAllBids(orderBookEvents));
         asksFromShapshot.addAll(getAllAsks(orderBookEvents));
+
         OrderBookSnapshot result = processBidsAndAsks(bidsFromShapshot, asksFromShapshot);
-        result.setLastUpdateId(orderBookSnapshot.getLastUpdateId());
+        result.setLastUpdateId(lastUpdatedId);
         return result;
     }
 
@@ -483,7 +547,8 @@ public class OrderBookManager {
         }
         else {
             OrderBookSnapshot orderBookSnapshot1 = processBidsAndAsks(getAllBids(orderBookEvents), getAllAsks(orderBookEvents));
-            orderBookSnapshot1.setLastUpdateId(0000000);
+            int lastIndex = orderBookEvents.size() - 1;
+            orderBookSnapshot1.setLastUpdateId(orderBookEvents.get(lastIndex).getFinalUpdateId());
             return orderBookSnapshot1;
         }
     }
