@@ -17,7 +17,7 @@ import java.util.regex.Pattern;
 @Service
 public class RestApi {
     private Timer timer;
-    private ThreadLocal<List<TradeEvent>> tradeEvents = new ThreadLocal<>();
+    private List<TradeEvent> tradeEvents = new ArrayList<>();
     private String PROCEED_TRADE_EVENT;
     private String SOURCE_TRADE_EVENT;
     private Boolean startTracking = true;
@@ -27,7 +27,6 @@ public class RestApi {
     public void startRestApi(DatabaseConfig databaseConfig, AppConfig appConfig, boolean update_parameter) {
         this.databaseConfig = databaseConfig;
         this.appConfig = appConfig;
-        tradeEvents.set(new ArrayList<>());
         if (!update_parameter) {
             PROCEED_TRADE_EVENT = "processed_trade_event_" + appConfig.getEventSymbol() + "_";
             SOURCE_TRADE_EVENT = "source_trade_event_" + appConfig.getEventSymbol() + "_";
@@ -194,10 +193,10 @@ public class RestApi {
             TradeEvent tradeEvent = parseTradeEvent(event);
             if (tradeEvent != null) {
                     if (insertTradeEventToSourceTable(tradeEvent))
-                        tradeEvents.get().add(tradeEvent);
+                        tradeEvents.add(tradeEvent);
                     if (startTracking) {
                         // Start the timer when tradeTime ends with 00 seconds
-                        tradeEvents.get().clear();
+                        tradeEvents.clear();
                         startTracking = false;
                         startTimer();
                     }
@@ -217,9 +216,9 @@ public class RestApi {
         timer.schedule(new TimerTask() {
             @Override
             public void run() {
-                if (!tradeEvents.get().isEmpty()) {
+                if (!tradeEvents.isEmpty()) {
                     calculateAndPrintSummary();
-                    tradeEvents.get().clear();
+                    tradeEvents.clear();
                 }
             }
         }, 60000, 60000);
@@ -293,14 +292,14 @@ public class RestApi {
     }
 
     private void calculateAndPrintSummary() {
-        String symbol = tradeEvents.get().get(0).getSymbol();
-        long tradeTime = tradeEvents.get().get(0).getTradeTime();
+        String symbol = tradeEvents.get(0).getSymbol();
+        long tradeTime = tradeEvents.get(0).getTradeTime();
         double sumQuantityTrue = 0;
         double sumQuantityFalse = 0;
         double weightedSumPriceTrue = 0;
         double weightedSumPriceFalse = 0;
 
-        for (TradeEvent tradeEvent : tradeEvents.get()) {
+        for (TradeEvent tradeEvent : tradeEvents) {
             double price = Double.parseDouble(tradeEvent.getPrice());
             double quantity = Double.parseDouble(tradeEvent.getQuantity());
             boolean isBuyerMarketMaker = tradeEvent.isBuyerMarketMaker();

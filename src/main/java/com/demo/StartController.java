@@ -13,15 +13,6 @@ public class StartController {
     @Autowired
     private DatabaseConfig databaseConfig;
 
-    private  final RestApi restApi;
-
-    private final OrderBookManager orderBookManager;
-
-    public StartController(RestApi restApi, OrderBookManager orderBookManager) {
-        this.restApi = restApi;
-        this.orderBookManager = orderBookManager;
-    }
-
     @GetMapping
     public String startApp(@RequestParam String eventSymbol,
                            @RequestParam int limitCount,
@@ -32,7 +23,9 @@ public class StartController {
         appConfig.setLimitCount(limitCount);
         appConfig.setUpdateSpeed(updateSpeed);
         try {
+            RestApi restApi = new RestApi();
             restApi.startRestApi(databaseConfig, appConfig, update_parameter);
+            OrderBookManager orderBookManager = new OrderBookManager();
             orderBookManager.startOrderBookManage(databaseConfig, appConfig, update_parameter);
             return "Systems started successfully.";
         }
