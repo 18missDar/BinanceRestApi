@@ -41,6 +41,12 @@ public class OrderBookManager {
 
     private Boolean startTracking = true;
 
+    public void createNewInstance(DatabaseConfig databaseConfig, AppConfig appConfig){
+        this.databaseConfig = databaseConfig;
+        this.appConfig = appConfig;
+        findLastCreatedTable();
+    }
+
 
     public void startOrderBookManage(DatabaseConfig databaseConfig, AppConfig appConfig, boolean update_parameter) {
         this.databaseConfig = databaseConfig;

@@ -1,6 +1,7 @@
 package com.demo;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -12,16 +13,17 @@ import java.util.List;
 @RequestMapping("/getOrderBook")
 public class OrderBookController {
 
-    private final OrderBookManager orderBookManager;
-
-    public OrderBookController(OrderBookManager orderBookManager) {
-        this.orderBookManager = orderBookManager;
-    }
+    @Autowired
+    private DatabaseConfig databaseConfig;
 
     @GetMapping
-    public String getOrderBook(@RequestParam long currentTime) {
+    public String getOrderBook(@RequestParam long currentTime, @RequestParam String eventSymbol) {
         OrderBookSnapshot orderBookSnapshot = null;
         try {
+            OrderBookManager orderBookManager = new OrderBookManager();
+            AppConfig appConfig = new AppConfig();
+            appConfig.setEventSymbol(eventSymbol);
+            orderBookManager.createNewInstance(databaseConfig, appConfig);
             orderBookSnapshot = orderBookManager.collectData(currentTime);
         } catch (JsonProcessingException e) {
             e.printStackTrace();
