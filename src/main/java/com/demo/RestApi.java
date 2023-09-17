@@ -5,6 +5,7 @@ import com.binance.connector.client.impl.WebSocketStreamClientImpl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.JsonObject;
+import org.postgresql.util.PSQLException;
 import org.springframework.stereotype.Service;
 
 import java.sql.*;
@@ -176,9 +177,9 @@ public class RestApi {
                 statement.executeUpdate();
                 return true;
             }
+        } catch (PSQLException e) {
+            return false;
         } catch (SQLException e) {
-            if (!e.getMessage().contains("duplicate key"))
-                e.printStackTrace();
             return false;
         }
     }
@@ -285,9 +286,10 @@ public class RestApi {
 
                 statement.executeUpdate();
             }
+        } catch (PSQLException e) {
+            //nothing
         } catch (SQLException e) {
-            if (!e.getMessage().contains("duplicate key"))
-                e.printStackTrace();
+            //nothing
         }
     }
 

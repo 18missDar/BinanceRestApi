@@ -9,6 +9,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.postgresql.util.PSQLException;
 import org.springframework.stereotype.Service;
 
 import org.apache.http.HttpEntity;
@@ -218,9 +219,10 @@ public class OrderBookManager {
                 preparedStatement.setObject(2, orderBookSnapshot, java.sql.Types.OTHER);
                 preparedStatement.executeUpdate();
             }
+        } catch (PSQLException e) {
+            //nothing
         } catch (SQLException e) {
-            if (!e.getMessage().contains("duplicate key"))
-                e.printStackTrace();
+            //nothing
         }
 
     }
@@ -266,9 +268,10 @@ public class OrderBookManager {
 
                 preparedStatement.executeUpdate();
             }
+        } catch (PSQLException e) {
+            //nothing
         } catch (SQLException e) {
-            if (!e.getMessage().contains("duplicate key"))
-                e.printStackTrace();
+            //nothing
         }
     }
 
@@ -488,23 +491,18 @@ public class OrderBookManager {
     }
 
     private OrderBookSnapshot processBidsAndAsks(List<OrderBookEvent.PriceQuantityPair> bids, List<OrderBookEvent.PriceQuantityPair> asks) {
-        Iterator<OrderBookEvent.PriceQuantityPair> bidsIterator = bids.iterator();
-        Iterator<OrderBookEvent.PriceQuantityPair> asksIterator = asks.iterator();
-
-        while (bidsIterator.hasNext()) {
-            OrderBookEvent.PriceQuantityPair bid = bidsIterator.next();
+      for (int i = 0; i <= bids.size(); i++){
+            OrderBookEvent.PriceQuantityPair bid = bids.get(i);
             String bidPrice = bid.getPrice();
             String bidQuantity = bid.getQuantity();
-
-            while (asksIterator.hasNext()) {
-                OrderBookEvent.PriceQuantityPair ask = asksIterator.next();
+            for (int j = 0; j <= asks.size(); j++){
+                OrderBookEvent.PriceQuantityPair ask = asks.get(j);
                 String askPrice = ask.getPrice();
                 String askQuantity = ask.getQuantity();
-
                 if (bidPrice.equals(askPrice) && bidQuantity.equals(askQuantity)) {
                     // Delete both the bid and ask
-                    bidsIterator.remove();
-                    asksIterator.remove();
+                    bids.remove(i);
+                    asks.remove(j);
                     break;
                 } else if (bidPrice.equals(askPrice)) {
                     double bidQuantityValue = Double.parseDouble(bidQuantity);
@@ -514,12 +512,12 @@ public class OrderBookManager {
                         // Update bid quantity and delete the ask
                         bidQuantityValue -= askQuantityValue;
                         bid.setQuantity(String.valueOf(bidQuantityValue));
-                        asksIterator.remove();
+                        asks.remove(j);
                     } else {
                         // Update ask quantity and delete the bid
                         askQuantityValue -= bidQuantityValue;
                         ask.setQuantity(String.valueOf(askQuantityValue));
-                        bidsIterator.remove();
+                        bids.remove(i);
                     }
                 }
             }
