@@ -547,8 +547,46 @@ public class OrderBookManager {
             int lastIndex = orderBookEvents.size() - 1;
             lastUpdatedId = orderBookEvents.get(lastIndex).getFinalUpdateId();
         }
-        bidsFromShapshot.addAll(getAllBids(orderBookEvents));
-        asksFromShapshot.addAll(getAllAsks(orderBookEvents));
+        for (OrderBookEvent.PriceQuantityPair pair: bidsFromShapshot){
+            for (OrderBookEvent.PriceQuantityPair pairActual: getAllBids(orderBookEvents)){
+                if (Double.valueOf(pair.getPrice()).equals(Double.valueOf(pairActual.getPrice())))
+                    pair.setQuantity(pairActual.getQuantity());
+            }
+
+        }
+        for (OrderBookEvent.PriceQuantityPair pairActual: getAllBids(orderBookEvents)){
+            if (!bidsFromShapshot.stream().anyMatch(x -> Double.valueOf(x.getPrice()).equals(Double.valueOf(pairActual.getPrice()))))
+                bidsFromShapshot.add(pairActual);
+            if (Double.valueOf(pairActual.getQuantity()).equals(0.0))
+                bidsFromShapshot.remove(pairActual);
+        }
+
+        for (OrderBookEvent.PriceQuantityPair pair: asksFromShapshot){
+            for (OrderBookEvent.PriceQuantityPair pairActual: getAllAsks(orderBookEvents)){
+                if (Double.valueOf(pair.getPrice()).equals(Double.valueOf(pairActual.getPrice())))
+                    pair.setQuantity(pairActual.getQuantity());
+            }
+        }
+        for (OrderBookEvent.PriceQuantityPair pairActual: getAllAsks(orderBookEvents)){
+            if (!asksFromShapshot.stream().anyMatch(x -> Double.valueOf(x.getPrice()).equals(Double.valueOf(pairActual.getPrice()))))
+                asksFromShapshot.add(pairActual);
+            if (Double.valueOf(pairActual.getQuantity()).equals(0.0))
+                asksFromShapshot.remove(pairActual);
+        }
+
+        Collections.sort(bidsFromShapshot, new Comparator<OrderBookEvent.PriceQuantityPair>() {
+            public int compare(OrderBookEvent.PriceQuantityPair p1, OrderBookEvent.PriceQuantityPair p2) {
+                return Double.compare(Double.valueOf(p2.getPrice()), Double.valueOf(p1.getPrice())); // Сортировка по убыванию цены
+            }
+
+        });
+
+        Collections.sort(asksFromShapshot, new Comparator<OrderBookEvent.PriceQuantityPair>() {
+            public int compare(OrderBookEvent.PriceQuantityPair p1, OrderBookEvent.PriceQuantityPair p2) {
+                return Double.compare(Double.valueOf(p1.getPrice()), Double.valueOf(p2.getPrice()));
+            }
+
+        });
 
         OrderBookSnapshot result = processBidsAndAsks(bidsFromShapshot, asksFromShapshot);
         result.setLastUpdateId(lastUpdatedId);
