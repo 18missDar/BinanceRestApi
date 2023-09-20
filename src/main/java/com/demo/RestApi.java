@@ -294,41 +294,43 @@ public class RestApi {
     }
 
     private void calculateAndPrintSummary() {
-        String symbol = tradeEvents.get(0).getSymbol();
-        long tradeTime = tradeEvents.get(0).getTradeTime();
-        double sumQuantityTrue = 0;
-        double sumQuantityFalse = 0;
-        double weightedSumPriceTrue = 0;
-        double weightedSumPriceFalse = 0;
+        if (tradeEvents.size() >= 1) {
+            String symbol = tradeEvents.get(0).getSymbol();
+            long tradeTime = tradeEvents.get(0).getTradeTime();
+            double sumQuantityTrue = 0;
+            double sumQuantityFalse = 0;
+            double weightedSumPriceTrue = 0;
+            double weightedSumPriceFalse = 0;
 
-        for (TradeEvent tradeEvent : tradeEvents) {
-            double price = Double.parseDouble(tradeEvent.getPrice());
-            double quantity = Double.parseDouble(tradeEvent.getQuantity());
-            boolean isBuyerMarketMaker = tradeEvent.isBuyerMarketMaker();
+            for (TradeEvent tradeEvent : tradeEvents) {
+                double price = Double.parseDouble(tradeEvent.getPrice());
+                double quantity = Double.parseDouble(tradeEvent.getQuantity());
+                boolean isBuyerMarketMaker = tradeEvent.isBuyerMarketMaker();
 
-            if (isBuyerMarketMaker) {
-                sumQuantityTrue += quantity;
-                weightedSumPriceTrue += price * quantity; // Calculate weighted sum for true
-            } else {
-                sumQuantityFalse += quantity;
-                weightedSumPriceFalse += price * quantity; // Calculate weighted sum for false
+                if (isBuyerMarketMaker) {
+                    sumQuantityTrue += quantity;
+                    weightedSumPriceTrue += price * quantity; // Calculate weighted sum for true
+                } else {
+                    sumQuantityFalse += quantity;
+                    weightedSumPriceFalse += price * quantity; // Calculate weighted sum for false
+                }
             }
+
+            double weightedAveragePriceTrue = weightedSumPriceTrue / sumQuantityTrue; // Calculate weighted average for true
+            double weightedAveragePriceFalse = weightedSumPriceFalse / sumQuantityFalse; // Calculate weighted average for false
+
+            // Create the summary JSON object
+            JsonObject summaryJson = new JsonObject();
+            summaryJson.addProperty("e", "trade");
+            summaryJson.addProperty("s", symbol);
+            summaryJson.addProperty("p_m_true", String.format("%.8f", weightedAveragePriceTrue));
+            summaryJson.addProperty("p_m_false", String.format("%.8f", weightedAveragePriceFalse));
+            summaryJson.addProperty("q_m_true", String.valueOf(sumQuantityTrue));
+            summaryJson.addProperty("q_m_false", String.valueOf(sumQuantityFalse));
+            summaryJson.addProperty("T", tradeTime);
+
+            // Print the summary JSON object
+            saveSummaryToDatabase(summaryJson);
         }
-
-        double weightedAveragePriceTrue = weightedSumPriceTrue / sumQuantityTrue; // Calculate weighted average for true
-        double weightedAveragePriceFalse = weightedSumPriceFalse / sumQuantityFalse; // Calculate weighted average for false
-
-        // Create the summary JSON object
-        JsonObject summaryJson = new JsonObject();
-        summaryJson.addProperty("e", "trade");
-        summaryJson.addProperty("s", symbol);
-        summaryJson.addProperty("p_m_true", String.format("%.8f", weightedAveragePriceTrue));
-        summaryJson.addProperty("p_m_false", String.format("%.8f", weightedAveragePriceFalse));
-        summaryJson.addProperty("q_m_true", String.valueOf(sumQuantityTrue));
-        summaryJson.addProperty("q_m_false", String.valueOf(sumQuantityFalse));
-        summaryJson.addProperty("T", tradeTime);
-
-        // Print the summary JSON object
-        saveSummaryToDatabase(summaryJson);
     }
 }

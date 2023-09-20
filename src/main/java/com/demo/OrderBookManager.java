@@ -491,11 +491,11 @@ public class OrderBookManager {
     }
 
     private OrderBookSnapshot processBidsAndAsks(List<OrderBookEvent.PriceQuantityPair> bids, List<OrderBookEvent.PriceQuantityPair> asks) {
-      for (int i = 0; i <= bids.size(); i++){
+      for (int i = 0; i < bids.size(); i++){
             OrderBookEvent.PriceQuantityPair bid = bids.get(i);
             String bidPrice = bid.getPrice();
             String bidQuantity = bid.getQuantity();
-            for (int j = 0; j <= asks.size(); j++){
+            for (int j = 0; j < asks.size(); j++){
                 OrderBookEvent.PriceQuantityPair ask = asks.get(j);
                 String askPrice = ask.getPrice();
                 String askQuantity = ask.getQuantity();
@@ -512,12 +512,22 @@ public class OrderBookManager {
                         // Update bid quantity and delete the ask
                         bidQuantityValue -= askQuantityValue;
                         bid.setQuantity(String.valueOf(bidQuantityValue));
-                        asks.remove(j);
+                        try {
+                            asks.remove(j);
+                        }
+                        catch (IndexOutOfBoundsException exception){
+                            //nothing
+                        }
                     } else {
                         // Update ask quantity and delete the bid
                         askQuantityValue -= bidQuantityValue;
                         ask.setQuantity(String.valueOf(askQuantityValue));
-                        bids.remove(i);
+                        try {
+                            bids.remove(i);
+                        }
+                        catch (IndexOutOfBoundsException exception){
+                            //nothing
+                        }
                     }
                 }
             }
@@ -532,8 +542,11 @@ public class OrderBookManager {
     private OrderBookSnapshot accumulateSnapshotActualBids(List<OrderBookEvent> orderBookEvents, OrderBookSnapshot orderBookSnapshot){
         List<OrderBookEvent.PriceQuantityPair> bidsFromShapshot = orderBookSnapshot.getBids();
         List<OrderBookEvent.PriceQuantityPair> asksFromShapshot = orderBookSnapshot.getAsks();
-        int lastIndex = orderBookEvents.size() - 1;
-        long lastUpdatedId = orderBookEvents.get(lastIndex).getFinalUpdateId();
+        long lastUpdatedId = 0;
+        if (orderBookEvents.size() > 0) {
+            int lastIndex = orderBookEvents.size() - 1;
+            lastUpdatedId = orderBookEvents.get(lastIndex).getFinalUpdateId();
+        }
         bidsFromShapshot.addAll(getAllBids(orderBookEvents));
         asksFromShapshot.addAll(getAllAsks(orderBookEvents));
 
