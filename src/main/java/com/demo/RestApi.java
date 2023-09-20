@@ -24,6 +24,8 @@ public class RestApi {
     private Boolean startTracking = true;
     private DatabaseConfig databaseConfig;
     private AppConfig appConfig;
+    private WebSocketStreamClient wsStreamClient;
+    private int number_connection_socket;
 
     public void startRestApi(DatabaseConfig databaseConfig, AppConfig appConfig, boolean update_parameter) {
         this.databaseConfig = databaseConfig;
@@ -185,12 +187,12 @@ public class RestApi {
     }
 
     private void startTradeStream() {
-        WebSocketStreamClient wsStreamClient = new WebSocketStreamClientImpl();
+        this.wsStreamClient = new WebSocketStreamClientImpl();
         ArrayList<String> streams = new ArrayList<>();
 
         streams.add(appConfig.getEventSymbol() + "@trade");
 
-        wsStreamClient.combineStreams(streams, (event) -> {
+        this.number_connection_socket = wsStreamClient.combineStreams(streams, (event) -> {
             TradeEvent tradeEvent = parseTradeEvent(event);
             if (tradeEvent != null) {
                     if (insertTradeEventToSourceTable(tradeEvent))
@@ -236,6 +238,7 @@ public class RestApi {
             @Override
             public void run() {
                 startTradeStream(); // Renew the WebSocket connection
+                wsStreamClient.closeConnection(number_connection_socket);
             }
         }, new Date(renewalTimeMillis));
     }
