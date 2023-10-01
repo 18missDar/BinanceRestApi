@@ -5,11 +5,13 @@ import com.binance.connector.client.impl.WebSocketStreamClientImpl;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.gson.*;
 import org.postgresql.util.PSQLException;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 
 import org.apache.http.HttpEntity;
@@ -18,6 +20,7 @@ import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
+import org.springframework.web.bind.annotation.RequestParam;
 
 import java.io.IOException;
 import java.sql.*;
@@ -41,6 +44,20 @@ public class OrderBookManager {
     private AppConfig appConfig;
 
     private Boolean startTracking = true;
+
+    private MessageSenderService messageSenderService;
+
+    public void setMessageSenderService(MessageSenderService messageSenderService) {
+        this.messageSenderService = messageSenderService;
+    }
+
+
+    private RabbitTemplate rabbitTemplate;
+
+
+    public void setRabbitTemplate(RabbitTemplate rabbitTemplate) {
+        this.rabbitTemplate = rabbitTemplate;
+    }
 
     public void createNewInstance(DatabaseConfig databaseConfig, AppConfig appConfig){
         this.databaseConfig = databaseConfig;
@@ -588,7 +605,9 @@ public class OrderBookManager {
 
         });
 
-        OrderBookSnapshot result = processBidsAndAsks(bidsFromShapshot, asksFromShapshot);
+        OrderBookSnapshot result = new OrderBookSnapshot();
+        result.setBids(bidsFromShapshot);
+        result.setAsks(asksFromShapshot);
         result.setLastUpdateId(lastUpdatedId);
         return result;
     }
@@ -605,6 +624,43 @@ public class OrderBookManager {
             int lastIndex = orderBookEvents.size() - 1;
             orderBookSnapshot1.setLastUpdateId(orderBookEvents.get(lastIndex).getFinalUpdateId());
             return orderBookSnapshot1;
+        }
+    }
+
+
+    public void startWritingTemporaryBook(long startTime,
+                                          long endTime,
+                                          int intervalMinutes,
+                                          String name_queue) throws JsonProcessingException {
+        OrderBookSnapshot snapshot = collectData(startTime);
+        while (startTime < endTime) {
+            List<OrderBookEvent> orderBookEvents = getRowsBetweenTimes(startTime, startTime + intervalMinutes);
+            OrderBookSnapshot temp = accumulateSnapshotActualBids(orderBookEvents, snapshot);
+            // Prepare the JSON object
+            Gson gson = new Gson();
+            String json = gson.toJson(temp);
+            messageSenderService.sendMessage(name_queue, json);
+            snapshot = temp;
+            startTime += intervalMinutes;
+        }
+
+    }
+
+    public String getTemporaryOrderBook(String name_queue) {
+        try {
+            // Retrieve a single message from the queue as a ParameterizedTypeReference
+            String oneMessage = String.valueOf(rabbitTemplate.receiveAndConvert(name_queue));
+
+            if (oneMessage != null) {
+                return oneMessage;
+            } else {
+                // If the queue is empty, you can return a default value or handle it as needed
+                return null;
+            }
+        } catch (Exception e) {
+            // Handle exceptions as needed (e.g., log or throw)
+            e.printStackTrace();
+            return null;
         }
     }
 
