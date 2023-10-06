@@ -605,9 +605,7 @@ public class OrderBookManager {
 
         });
 
-        OrderBookSnapshot result = new OrderBookSnapshot();
-        result.setBids(bidsFromShapshot);
-        result.setAsks(asksFromShapshot);
+        OrderBookSnapshot result = processBidsAndAsks(bidsFromShapshot, asksFromShapshot);
         result.setLastUpdateId(lastUpdatedId);
         return result;
     }
@@ -632,15 +630,19 @@ public class OrderBookManager {
                                           long endTime,
                                           int intervalMinutes,
                                           String name_queue) throws JsonProcessingException {
-        OrderBookSnapshot snapshot = collectData(startTime);
+        Optional<OrderBookSnapshot> snapshot = findClosestSnapshot(startTime);
+        OrderBookSnapshot snapshotCurrent = null;
+        if (snapshot != null)
+            snapshotCurrent = snapshot.get();
+        messageSenderService.createQueue(name_queue);
         while (startTime < endTime) {
-            List<OrderBookEvent> orderBookEvents = getRowsBetweenTimes(startTime, startTime + intervalMinutes);
-            OrderBookSnapshot temp = accumulateSnapshotActualBids(orderBookEvents, snapshot);
+            List<OrderBookEvent> orderBookEvents = getRowsBetweenTimes(snapshotCurrent.getCurrentTime(), startTime + intervalMinutes);
+            OrderBookSnapshot temp = accumulateSnapshotActualBids(orderBookEvents, snapshotCurrent);
             // Prepare the JSON object
             Gson gson = new Gson();
             String json = gson.toJson(temp);
             messageSenderService.sendMessage(name_queue, json);
-            snapshot = temp;
+            snapshotCurrent = temp;
             startTime += intervalMinutes;
         }
 

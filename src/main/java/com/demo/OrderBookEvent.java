@@ -47,6 +47,19 @@ public class OrderBookEvent {
                     ", \"" + quantity + "\"" +
                     "]";
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof PriceQuantityPair)) return false;
+            PriceQuantityPair that = (PriceQuantityPair) o;
+            return getPrice().equals(that.getPrice()) && getQuantity().equals(that.getQuantity());
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(getPrice(), getQuantity());
+        }
     }
 
     public String getEventType() {
